@@ -37,13 +37,23 @@ db.exec(`
     temp_data TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS review_sessions (
+    admin_id TEXT PRIMARY KEY,
+    last_reviewed_id TEXT,
+    reviewed_today INTEGER DEFAULT 0,
+    batch_size INTEGER DEFAULT 10,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
-// Insert default settings
+// Default settings
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 insertSetting.run('admin_id', process.env.ADMIN_ID || '5744542264');
 insertSetting.run('group_id', process.env.GROUP_ID || '');
 insertSetting.run('openai_api_key', process.env.OPENAI_API_KEY || '');
-insertSetting.run('mahalla_name', 'Navbahor Mahallasi');
+insertSetting.run('mahalla_name', 'Damariq Mahallasi');
+insertSetting.run('deadline_days', '7');
+insertSetting.run('deadline_start_date', new Date().toISOString());
 
 module.exports = db;

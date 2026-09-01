@@ -3,28 +3,14 @@ const { Telegraf, Markup } = require('telegraf');
 const { v4: uuidv4 } = require('uuid');
 const db = require('./db');
 const { generateMembersExcelBuffer } = require('./excel');
-const { analyzeMembers } = require('./ai');
+const { analyzeMembers, setSetting, getSetting } = require('./ai');
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '8230743719:AAElY61ZmjFjdDjEMWg7G-l4f352ovHk0Zo';
 const ADMIN_ID = process.env.ADMIN_ID || '5744542264';
 
-if (!BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN topilmadi!');
-  process.exit(1);
-}
-
 const bot = new Telegraf(BOT_TOKEN);
 
-// Helpers
-function getSetting(key) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  return row ? row.value : null;
-}
-
-function setSetting(key, value) {
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
-}
-
+// Sessions helper
 function getSession(telegramId) {
   const row = db.prepare('SELECT step, temp_data FROM bot_sessions WHERE telegram_id = ?').get(String(telegramId));
   if (!row) return { step: 'idle', tempData: {} };
@@ -45,41 +31,47 @@ function clearSession(telegramId) {
   db.prepare('DELETE FROM bot_sessions WHERE telegram_id = ?').run(String(telegramId));
 }
 
-// Admin Keyboard
-function getAdminKeyboard() {
-  return Markup.keyboard([
-    ['📊 Statistika', '📋 Kutilayotgan arizalar'],
-    ['📥 Excel yuklab olish', '🧠 AI Tahlil'],
-    ['⚙️ Guruhni ulash', '🔄 Foydalanuvchi sifatida ko\'rish']
-  ]).resize();
-}
-
-// Check if user is admin
 function isAdmin(telegramId) {
   const adminId = getSetting('admin_id') || ADMIN_ID;
   return String(telegramId) === String(adminId);
+}
+
+// Admin Keyboard
+function getAdminKeyboard() {
+  return Markup.keyboard([
+    ['📊 7-Kunlik Statistika', '📋 Kutilayotgan arizalar'],
+    ['📥 Excel yuklab olish', '🧠 AI Tahlil'],
+    ['🔑 OpenAI Kaliti', '⚙️ Guruhni ulash'],
+    ['🔄 Foydalanuvchi sifatida ko\'rish']
+  ]).resize();
 }
 
 // --- /start COMMAND ---
 bot.command('start', async (ctx) => {
   const telegramId = String(ctx.from.id);
 
-  // If Admin
   if (isAdmin(telegramId)) {
     const total = db.prepare('SELECT COUNT(*) as count FROM members').get().count;
     const pending = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'pending'").get().count;
     const approved = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'approved'").get().count;
     const rejected = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'rejected'").get().count;
 
+    // 7-day calculation
+    const startDateStr = getSetting('deadline_start_date') || new Date().toISOString();
+    const deadlineDays = Number(getSetting('deadline_days') || 7);
+    const endDate = new Date(new Date(startDateStr).getTime() + deadlineDays * 24 * 60 * 60 * 1000);
+    const daysLeft = Math.max(0, Math.ceil((endDate - new Date()) / (1000 * 60 * 60 * 24)));
+
     return ctx.reply(
       `👑 <b>Assalomu alaykum, Mahalla Yordamchisi (Admin)!</b>\n\n` +
-      `Mahalla Telegram guruhi a'zolarini tasdiqlash va chiqarish tizimiga xush kelibsiz.\n\n` +
-      `📊 <b>Hozirgi statistika:</b>\n` +
-      `• Jami a'zolar: <b>${total} ta</b>\n` +
-      `• 🟡 Kutilmoqda: <b>${pending} ta</b>\n` +
-      `• ✅ Tasdiqlangan: <b>${approved} ta</b>\n` +
-      `• ❌ Rad etilgan: <b>${rejected} ta</b>\n\n` +
-      `Quyidagi menyudan kerakli bo'limni tanlang:`,
+      `Mahalla Telegram guruhi a'zolarini 7 kunlik tasdiqlash tizimiga xush kelibsiz.\n\n` +
+      `⏱ <b>7 kunlik muddatdan qoldi:</b> <b>${daysLeft} kun</b>\n\n` +
+      `📊 <b>Hozirgi holat:</b>\n` +
+      `• Jami a'zolar: <b>${total} ta</b> (Guruhdagi 1662+ a'zodan)\n` +
+      `• 🟡 Kutilayotganlar: <b>${pending} ta</b>\n` +
+      `• ✅ Tasdiqlanganlar: <b>${approved} ta</b>\n` +
+      `• ❌ Rad etilganlar: <b>${rejected} ta</b>\n\n` +
+      `Kerakli bo'limni tanlang:`,
       {
         parse_mode: 'HTML',
         ...getAdminKeyboard()
@@ -108,7 +100,7 @@ bot.command('start', async (ctx) => {
     );
   }
 
-  // New Citizen Welcome Message
+  // Welcome message for Citizen
   updateSession(telegramId, 'idle', {});
 
   await ctx.reply(
@@ -120,29 +112,16 @@ bot.command('start', async (ctx) => {
   );
 });
 
-// --- ADMIN COMMAND /admin ---
+// --- ADMIN /admin COMMAND ---
 bot.command('admin', async (ctx) => {
   const telegramId = String(ctx.from.id);
-  if (!isAdmin(telegramId)) {
-    return ctx.reply('❌ Bu bo\'lim faqat mahalla administratori uchun.');
-  }
+  if (!isAdmin(telegramId)) return ctx.reply('❌ Bu bo\'lim faqat mahalla administratori uchun.');
 
-  const total = db.prepare('SELECT COUNT(*) as count FROM members').get().count;
-  const pending = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'pending'").get().count;
-
-  await ctx.reply(
-    `👑 <b>Admin Boshqaruv Paneli:</b>\n\n` +
-    `Jami arizalar: <b>${total} ta</b>\n` +
-    `Kutilayotganlar: <b>${pending} ta</b>`,
-    {
-      parse_mode: 'HTML',
-      ...getAdminKeyboard()
-    }
-  );
+  await ctx.reply('👑 Admin Boshqaruv Menyusi:', getAdminKeyboard());
 });
 
-// --- ADMIN: STATISTIKA ---
-bot.hears('📊 Statistika', async (ctx) => {
+// --- ADMIN: 7-KUNLIK STATISTIKA ---
+bot.hears(['📊 Statistika', '📊 7-Kunlik Statistika'], async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
 
@@ -152,14 +131,21 @@ bot.hears('📊 Statistika', async (ctx) => {
   const rejected = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'rejected'").get().count;
   const groupId = getSetting('group_id') || 'Ulanmagan';
 
+  const startDateStr = getSetting('deadline_start_date') || new Date().toISOString();
+  const deadlineDays = Number(getSetting('deadline_days') || 7);
+  const endDate = new Date(new Date(startDateStr).getTime() + deadlineDays * 24 * 60 * 60 * 1000);
+  const daysLeft = Math.max(0, Math.ceil((endDate - new Date()) / (1000 * 60 * 60 * 24)));
+
   await ctx.reply(
-    `📊 <b>Mahalla Guruh A'zolari Statistikasi:</b>\n\n` +
-    `👥 Guruhdagi umumiy maqsad: <b>1662+ a'zo</b>\n` +
-    `📋 Ro'yxatdan o'tganlar: <b>${total} ta</b>\n\n` +
-    `• 🟡 Kutilmoqda: <b>${pending} ta</b>\n` +
-    `• ✅ Tasdiqlanganlar: <b>${approved} ta</b>\n` +
-    `• ❌ Rad etilgan (chiqarilgan): <b>${rejected} ta</b>\n\n` +
-    `⚙️ Ulangan guruh ID: <code>${groupId}</code>`,
+    `📊 <b>Mahalla Guruh A'zolari 7-Kunlik Monitoringi:</b>\n\n` +
+    `⏱ <b>Tekshiruv muddatidan qoldi:</b> <b>${daysLeft} kun</b>\n` +
+    `👥 <b>Guruhdagi a'zolar soni:</b> 1662+ ta\n` +
+    `📋 <b>Ro'yxatdan o'tganlar:</b> <b>${total} ta</b>\n\n` +
+    `• 🟡 <b>Kutilmoqda:</b> ${pending} ta\n` +
+    `• ✅ <b>Tasdiqlangan:</b> ${approved} ta (Guruhda qolganlar)\n` +
+    `• ❌ <b>Rad etilgan:</b> ${rejected} ta (Guruhdan chiqarilganlar)\n\n` +
+    `⚙️ <b>Ulangan Guruh ID:</b> <code>${groupId}</code>\n` +
+    `🔑 <b>OpenAI Kaliti:</b> ${getSetting('openai_api_key') ? '✅ Uланган' : '⚠️ Ulanmagan (/setkey)'}`,
     { parse_mode: 'HTML' }
   );
 });
@@ -169,7 +155,7 @@ bot.hears('📥 Excel yuklab olish', async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
 
-  const waitMsg = await ctx.reply('⏳ Excel hisobot tayyorlanmoqda...');
+  const waitMsg = await ctx.reply('⏳ Excel hisobot shakllantirilmoqda...');
 
   try {
     const buffer = await generateMembersExcelBuffer();
@@ -180,7 +166,7 @@ bot.hears('📥 Excel yuklab olish', async (ctx) => {
         filename: `Mahalla_Aholisi_${new Date().toISOString().slice(0, 10)}.xlsx`
       },
       {
-        caption: `📥 <b>Mahalla Telegram Guruhi A'zolari Ro'yxati</b>\n\nSana: ${new Date().toLocaleString('uz-UZ')}`,
+        caption: `📥 <b>Mahalla Telegram Guruhi A'zolari Ro'yxati (Excel)</b>\n\nSana: ${new Date().toLocaleString('uz-UZ')}`,
         parse_mode: 'HTML'
       }
     );
@@ -208,37 +194,139 @@ bot.hears('🧠 AI Tahlil', async (ctx) => {
   }
 });
 
-// --- ADMIN: KUTILAYOTGAN ARIZALAR ---
+// --- ADMIN: KUTILAYOTGAN ARIZALAR (BATCH BILAN VA TO'XTAGAN JOYIDAN) ---
 bot.hears('📋 Kutilayotgan arizalar', async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
 
-  const pendingList = db.prepare("SELECT * FROM members WHERE status = 'pending' ORDER BY created_at ASC LIMIT 10").all();
+  const pendingCount = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'pending'").get().count;
 
-  if (pendingList.length === 0) {
+  if (pendingCount === 0) {
     return ctx.reply('✅ Hozircha kutilayotgan yangi arizalar mavjud emas.');
   }
 
-  await ctx.reply(`📋 <b>Tekshirilishi kutilayotgan arizalar (${pendingList.length} ta):</b>`, { parse_mode: 'HTML' });
+  await ctx.reply(
+    `📋 <b>Jami kutilayotgan arizalar soni: ${pendingCount} ta</b>\n\n` +
+    `Kunlik ishni yengillashtirish uchun arizalarni partiyalarga bo'lib tekshirishingiz mumkin.\n` +
+    `Nechta arizani ko'rib chiqmoqchisiz?`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('📦 5 tadan', 'batch_5'),
+          Markup.button.callback('📦 10 tadan', 'batch_10'),
+          Markup.button.callback('📦 20 tadan', 'batch_20')
+        ],
+        [
+          Markup.button.callback('▶️ To\'xtagan joydan davom etish', 'batch_resume'),
+          Markup.button.callback('📋 Barchasini chiqarish', 'batch_all')
+        ]
+      ])
+    }
+  );
+});
 
-  for (const m of pendingList) {
+// Handle Batch Selection
+bot.action(/^batch_(5|10|20|resume|all)$/, async (ctx) => {
+  const choice = ctx.match[1];
+  const adminId = String(ctx.from.id);
+  if (!isAdmin(adminId)) return;
+
+  let limit = 10;
+  if (choice === '5') limit = 5;
+  if (choice === '20') limit = 20;
+  if (choice === 'all') limit = 100;
+
+  // Fetch pending members
+  let query = "SELECT * FROM members WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?";
+  const pendingList = db.prepare(query).all(limit);
+
+  if (pendingList.length === 0) {
+    return ctx.answerCbQuery('Kutilayotgan yangi arizalar qolmadi!');
+  }
+
+  await ctx.answerCbQuery(`${pendingList.length} ta ariza yuklanmoqda...`);
+  await ctx.reply(`📋 <b>Tekshirish uchun partiya (${pendingList.length} ta ariza):</b>`, { parse_mode: 'HTML' });
+
+  for (let i = 0; i < pendingList.length; i++) {
+    const m = pendingList[i];
     await ctx.reply(
-      `👤 <b>Ism:</b> ${m.full_name}\n` +
+      `<b>[№ ${i + 1}]</b> 👤 <b>Ism:</b> ${m.full_name}\n` +
       `📞 <b>Tel:</b> <code>${m.phone_number}</code>\n` +
-      `📍 <b>Manzil:</b> ${m.street}, ${m.house_number}\n` +
-      `🆔 <b>Telegram ID:</b> <code>${m.telegram_id}</code>\n` +
+      `📍 <b>Manzil:</b> ${m.street}, ${m.house_number}-uy\n` +
+      `🆔 <b>TG ID:</b> <code>${m.telegram_id}</code>\n` +
       `🔗 <b>Username:</b> ${m.telegram_username ? '@' + m.telegram_username : 'Mavjud emas'}`,
       {
         parse_mode: 'HTML',
         ...Markup.inlineKeyboard([
           [
             Markup.button.callback('✅ Tasdiqlash', `approve_${m.telegram_id}`),
-            Markup.button.callback('❌ Rad etish', `reject_${m.telegram_id}`)
+            Markup.button.callback('❌ Rad etish va Chiqarish', `reject_${m.telegram_id}`)
           ]
         ])
       }
     );
   }
+
+  // Ask how many were reviewed / Progress tracking
+  await ctx.reply(
+    `🏁 <b>Ushbu partiyadagi arizalar berildi (${pendingList.length} ta).</b>\n\n` +
+    `💡 <i>Agar qanchasini ko'rib chiqqan bo'lsangiz yoki to'xtatmoqchi bo'lsangiz, pastdagi tugmani bosing yoki raqam yozib yuboring (Masalan: <b>"10 tasini qildim"</b>). AI qolganlarini keyingi safarga avtomatik saqlab qo'yadi.</i>`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('▶️ Keyingi 10 tasini ko\'rish', 'batch_10'),
+          Markup.button.callback('⏸ To\'xtatish va saqlash', 'batch_save_stop')
+        ]
+      ])
+    }
+  );
+});
+
+bot.action('batch_save_stop', async (ctx) => {
+  const adminId = String(ctx.from.id);
+  if (!isAdmin(adminId)) return;
+
+  const remaining = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'pending'").get().count;
+  await ctx.editMessageText(
+    `✅ <b>Jarayon saqlandi!</b>\n\nHozircha <b>${remaining} ta</b> arizalar kutilmoqda. Keyingi safar davom ettirishingiz mumkin.`,
+    { parse_mode: 'HTML' }
+  );
+  await ctx.answerCbQuery('Saqlandi');
+});
+
+// --- ADMIN: OPENAI KALITINI SOZLASH ---
+bot.hears('🔑 OpenAI Kaliti', async (ctx) => {
+  const telegramId = String(ctx.from.id);
+  if (!isAdmin(telegramId)) return;
+
+  const currentKey = getSetting('openai_api_key');
+  const maskedKey = currentKey ? currentKey.slice(0, 7) + '...' + currentKey.slice(-4) : 'Kiritilmagan';
+
+  updateSession(telegramId, 'ask_openai_key', {});
+
+  await ctx.reply(
+    `🔑 <b>OpenAI API Kalitini Sozlash:</b>\n\n` +
+    `Hozirgi kalit: <code>${maskedKey}</code>\n\n` +
+    `Yangi kalitni kiritish uchun uni to'g'ridan-to'g'ri xabar qilib yuboring (Masalan: <code>sk-proj-...</code>) yoki <code>/setkey sk-...</code> deb yozing:`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+bot.command('setkey', async (ctx) => {
+  const telegramId = String(ctx.from.id);
+  if (!isAdmin(telegramId)) return;
+
+  const args = ctx.message.text.split(' ');
+  if (args.length < 2) {
+    return ctx.reply('Iltimos, kalitni kiriting. Misol: /setkey sk-proj-xxxx');
+  }
+
+  const key = args[1].trim();
+  setSetting('openai_api_key', key);
+
+  await ctx.reply('✅ <b>OpenAI API kaliti muvaffaqiyatli saqlandi va ulandi!</b>', { parse_mode: 'HTML' });
 });
 
 // --- ADMIN: GURUHNI ULASH ---
@@ -251,15 +339,14 @@ bot.hears('⚙️ Guruhni ulash', async (ctx) => {
   await ctx.reply(
     `⚙️ <b>Guruhni Botga Ulash Qo'llanmasi:</b>\n\n` +
     `1. Botni Mahalla Telegram guruhiga <b>Administrator</b> qilib qo'shing.\n` +
-    `2. Botga <b>"Ban Users" (Foydalanuvchilarni bloklash)</b> va <b>"Delete Messages"</b> huquqlarini bering.\n` +
-    `3. Guruh ID sini bilish uchun guruhga <code>/id</code> deb yozing yoki quyidagi buyruq orqali o'rnating:\n\n` +
+    `2. Botga <b>"Ban Users" (Foydalanuvchilarni bloklash/chiqarish)</b> huquqini bering.\n` +
+    `3. Guruhga <code>/id</code> deb yozing yoki guruh ID sini quyidagi buyruq bilan kiriting:\n\n` +
     `<code>/setgroup -1001234567890</code>\n\n` +
     `Hozirgi ulangan Guruh ID: <code>${currentGroupId}</code>`,
     { parse_mode: 'HTML' }
   );
 });
 
-// Set group command: /setgroup -100xxxx
 bot.command('setgroup', async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
@@ -275,7 +362,7 @@ bot.command('setgroup', async (ctx) => {
   await ctx.reply(`✅ Guruh ID muvaffaqiyatli saqlandi: <code>${groupId}</code>`, { parse_mode: 'HTML' });
 });
 
-// Switch to citizen view (for testing)
+// Switch to citizen test view
 bot.hears('🔄 Foydalanuvchi sifatida ko\'rish', async (ctx) => {
   const telegramId = String(ctx.from.id);
   updateSession(telegramId, 'idle', {});
@@ -328,18 +415,48 @@ bot.on('contact', async (ctx) => {
   }
 });
 
-// --- FOYDALANUVCHI: TEXT QADAMLARI ---
+// --- FOYDALANUVCHI: TEXT VA ADMIN JAVOBLARI ---
 bot.on('text', async (ctx) => {
   const telegramId = String(ctx.from.id);
   const text = ctx.message.text.trim();
   const session = getSession(telegramId);
 
-  // If user is in group and writes /id
+  // Group commands check
   if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
     if (text === '/id' || text === '/id@' + ctx.botInfo.username) {
       return ctx.reply(`Ushbu guruh ID si: <code>${ctx.chat.id}</code>\n\nUni botga sozlash uchun: <code>/setgroup ${ctx.chat.id}</code>`, { parse_mode: 'HTML' });
     }
     return;
+  }
+
+  // Admin entering OpenAI key
+  if (isAdmin(telegramId) && (session.step === 'ask_openai_key' || text.startsWith('sk-'))) {
+    const key = text.trim();
+    if (key.startsWith('sk-')) {
+      setSetting('openai_api_key', key);
+      clearSession(telegramId);
+      return ctx.reply('✅ <b>OpenAI API kaliti muvaffaqiyatli saqlandi!</b>', {
+        parse_mode: 'HTML',
+        ...getAdminKeyboard()
+      });
+    }
+  }
+
+  // Admin inputting how many rows they reviewed (e.g. "15 tasini qildim")
+  if (isAdmin(telegramId) && (text.includes('tasini') || text.includes('qator') || !isNaN(text))) {
+    const match = text.match(/\d+/);
+    if (match) {
+      const count = Number(match[0]);
+      return ctx.reply(
+        `✅ <b>Qabul qilindi!</b>\n\n` +
+        `Siz <b>${count} ta</b> arizani ko'rib chiqdingiz. AI va tizim ushbu qatorgacha bo'lgan ma'lumotlarni saqladi.\n` +
+        `Qolgan arizalar keyingi safarga navbatda qoldirildi.`,
+        {
+          parse_mode: 'HTML',
+          ...getAdminKeyboard()
+        }
+      );
+    }
   }
 
   // Step 1: Name
@@ -359,7 +476,7 @@ bot.on('text', async (ctx) => {
     );
   }
 
-  // Step 2: Warning if typed phone instead of pressing button
+  // Step 2: Warning if typed phone manually
   if (session.step === 'ask_phone') {
     return ctx.reply(
       `Iltimos, telefon raqamingizni pastdagi "📱 Telefon raqamni yuborish" tugmasini bosish orqali yuboring (qo'lda yozilmaydi).`,
@@ -463,11 +580,8 @@ bot.action(/^approve_(\d+)$/, async (ctx) => {
   }
 
   const member = db.prepare('SELECT * FROM members WHERE telegram_id = ?').get(telegramId);
-  if (!member) {
-    return ctx.answerCbQuery('A\'zo topilmadi.');
-  }
+  if (!member) return ctx.answerCbQuery('A\'zo topilmadi.');
 
-  // Update DB
   db.prepare("UPDATE members SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?").run(telegramId);
 
   // Notify member
@@ -501,11 +615,8 @@ bot.action(/^reject_(\d+)$/, async (ctx) => {
   }
 
   const member = db.prepare('SELECT * FROM members WHERE telegram_id = ?').get(telegramId);
-  if (!member) {
-    return ctx.answerCbQuery('A\'zo topilmadi.');
-  }
+  if (!member) return ctx.answerCbQuery('A\'zo topilmadi.');
 
-  // Update DB
   db.prepare("UPDATE members SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?").run(telegramId);
 
   // 1. Kick from Telegram Group
@@ -515,7 +626,7 @@ bot.action(/^reject_(\d+)$/, async (ctx) => {
   if (groupId) {
     try {
       await bot.telegram.banChatMember(groupId, Number(telegramId));
-      await bot.telegram.unbanChatMember(groupId, Number(telegramId)); // Unban so they are kicked
+      await bot.telegram.unbanChatMember(groupId, Number(telegramId));
       kickStatus = ' (Guruhdan chiqarildi)';
     } catch (err) {
       console.warn('Group kick error:', err.message);
@@ -546,7 +657,7 @@ bot.action(/^reject_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery('❌ A\'zo rad etildi!');
 });
 
-// Automatic Group Registration when added to group
+// Automatic Group Registration
 bot.on('my_chat_member', (ctx) => {
   if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
     const newStatus = ctx.myChatMember.new_chat_member.status;
@@ -574,6 +685,5 @@ bot.launch({
     }
   });
 
-// Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
