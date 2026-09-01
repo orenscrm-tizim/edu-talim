@@ -1,0 +1,13 @@
+{
+  "name": "skyline-education-lms",
+  "version": "1.0.0",
+  "description": "Skyline Education LMS Platform with Homework System, Groups & 1-on-1 Chat",
+  "scripts": {
+    "server": "cd server && npm start",
+    "client": "cd client && npm run dev",
+    "dev": "npm run server & npm run client"
+  },
+  "keywords": ["lms", "education", "skyline", "homework", "chat"],
+  "author": "Antigravity",
+  "license": "ISC"
+}
