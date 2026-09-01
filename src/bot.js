@@ -330,22 +330,23 @@ async function executeExcelBatch(ctx, rowLimit = null) {
         } catch (e) {}
       } else if (item.newStatus === 'rejected') {
         actuallyKicked++;
-        // Kick from group
+        // 1. Darhol va so'zsiz guruhdan chiqarish (Immediate Kick)
         if (groupId) {
           try {
             await bot.telegram.banChatMember(groupId, Number(item.telegram_id));
             await bot.telegram.unbanChatMember(groupId, Number(item.telegram_id));
+            console.log(`✅ [GURUHDAN CHIQARILDI] Telegram ID: ${item.telegram_id}, Ism: ${item.full_name}`);
           } catch (e) {
-            console.warn(`Kick error for ${item.telegram_id}:`, e.message);
+            console.warn(`⚠️ [Guruhdan chiqarish xatosi] ${item.telegram_id}:`, e.message);
           }
         }
-        // Send rejection message
+        // 2. Fuqaroning shaxsiyiga tushuntirish xati (DM)
         try {
           await bot.telegram.sendMessage(
             item.telegram_id,
             `❌ <b>Hurmatli fuqaro!</b>\n\n` +
             `Sizning a'zoligingiz mahalla ma'muriyati tomonidan rad etildi va siz mahalla Telegram guruhidan chiqarildingiz.\n\n` +
-            `Agar bu xatolik bo'lsa, mahalla yordamchisiga murojaat qiling.`,
+            `Agar bu xatolik bo'lsa, mahalla yordamchisiga murojaat qilishingiz mumkin.`,
             { parse_mode: 'HTML' }
           );
         } catch (e) {}
