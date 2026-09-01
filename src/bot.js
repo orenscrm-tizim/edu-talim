@@ -6,7 +6,7 @@ const { generateMembersExcelBuffer } = require('./excel');
 const { analyzeMembers, askAiAssistant, setSetting, getSetting } = require('./ai');
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '8230743719:AAElY61ZmjFjdDjEMWg7G-l4f352ovHk0Zo';
-const ADMIN_ID = process.env.ADMIN_ID || '5744542264';
+const DEFAULT_ADMIN_IDS = ['5744542264', '7041203698'];
 const DEFAULT_GROUP_ID = process.env.GROUP_ID || '-1001607742536';
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -32,9 +32,17 @@ function clearSession(telegramId) {
   db.prepare('DELETE FROM bot_sessions WHERE telegram_id = ?').run(String(telegramId));
 }
 
+function getAdminIds() {
+  const customAdmin = getSetting('admin_id');
+  const list = [...DEFAULT_ADMIN_IDS];
+  if (customAdmin && !list.includes(String(customAdmin))) {
+    list.push(String(customAdmin));
+  }
+  return list;
+}
+
 function isAdmin(telegramId) {
-  const adminId = getSetting('admin_id') || ADMIN_ID;
-  return String(telegramId) === String(adminId);
+  return getAdminIds().includes(String(telegramId));
 }
 
 // Admin Keyboard
@@ -596,12 +604,12 @@ bot.on('text', async (ctx) => {
       Markup.keyboard([['🔄 Ma\'lumotlarni qayta kiritish']]).resize()
     );
 
-    // Notify Admin
-    const adminId = getSetting('admin_id') || ADMIN_ID;
-    if (adminId) {
+    // Notify All Admins
+    const adminIds = getAdminIds();
+    for (const admId of adminIds) {
       try {
         await bot.telegram.sendMessage(
-          adminId,
+          admId,
           `📩 <b>Yangi Aholi Arizasi Kelib Tushdi:</b>\n\n` +
           `👤 <b>Ism:</b> ${finalData.name}\n` +
           `📞 <b>Telefon:</b> <code>${finalData.phone}</code>\n` +
@@ -619,7 +627,7 @@ bot.on('text', async (ctx) => {
           }
         );
       } catch (err) {
-        console.warn('Could not send notification to admin:', err.message);
+        console.warn(`Could not send notification to admin ${admId}:`, err.message);
       }
     }
   }
