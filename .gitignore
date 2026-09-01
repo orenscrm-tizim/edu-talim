@@ -1,28 +1,6 @@
-# Dependencies
 node_modules/
-client/node_modules/
-server/node_modules/
-
-# Production builds
-dist/
-client/dist/
-build/
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Environment files
 .env
-.env.local
-.env.*.local
-
-# OS generated
+*.log
 .DS_Store
-Thumbs.db
-
-# Uploads directory contents (keep empty folder or let server create)
-server/uploads/*
-!server/uploads/.gitkeep
+data/
+uploads/
