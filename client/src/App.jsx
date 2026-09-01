@@ -13,9 +13,18 @@ import HomeworkGradeModal from './components/HomeworkGradeModal';
 import { BookOpen, Layers, MessageSquare, Users, Video, Trophy } from 'lucide-react';
 import { api } from './api';
 
+const DEFAULT_USER = {
+  id: 'teacher_frontend',
+  name: 'Saidbek Rustamov',
+  phone: '+998911112233',
+  role: 'teacher',
+  avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
+  specialty: 'Senior Frontend Developer'
+};
+
 export default function App() {
-  const [allUsers, setAllUsers] = useState([]);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [allUsers, setAllUsers] = useState([DEFAULT_USER]);
+  const [currentUser, setCurrentUser] = useState(DEFAULT_USER);
   const [activeTab, setActiveTab] = useState('homeworks'); // homeworks, groups, materials, leaderboard, chat, admin
   const [unreadCount, setUnreadCount] = useState(0);
 
@@ -32,10 +41,13 @@ export default function App() {
   // Load initial users
   useEffect(() => {
     api.getUsers().then(users => {
-      setAllUsers(users);
-      // Default to Saidbek (Frontend teacher) or first user
-      const defaultUser = users.find(u => u.id === 'teacher_frontend') || users[0];
-      setCurrentUser(defaultUser);
+      if (Array.isArray(users) && users.length > 0) {
+        setAllUsers(users);
+        const defaultUser = users.find(u => u.id === 'teacher_frontend') || users[0];
+        setCurrentUser(defaultUser);
+      }
+    }).catch(err => {
+      console.warn('Backend loading in background:', err);
     });
   }, []);
 
