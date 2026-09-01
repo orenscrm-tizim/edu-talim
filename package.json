@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Skyline Education LMS Platform with Homework System, Groups & 1-on-1 Chat",
   "scripts": {
+    "build": "cd client && npm install && npm run build",
     "server": "cd server && npm start",
     "client": "cd client && npm run dev",
     "dev": "npm run server & npm run client"
