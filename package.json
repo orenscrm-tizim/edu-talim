@@ -1,15 +1,26 @@
 {
-  "name": "skyline-education-lms",
+  "name": "mahalla-telegram-bot",
   "version": "1.0.0",
-  "description": "Skyline Education LMS Platform with Homework System, Groups & 1-on-1 Chat",
+  "description": "Mahalla Telegram Guruhi A'zolarini Tasdiqlash va Chiqarish Boti",
+  "main": "src/bot.js",
   "scripts": {
-    "build": "cd client && npm install && npm run build",
-    "start": "cd server && npm install && npm start",
-    "server": "cd server && npm start",
-    "client": "cd client && npm run dev",
-    "dev": "npm run server & npm run client"
+    "start": "node src/bot.js",
+    "dev": "node src/bot.js"
   },
-  "keywords": ["lms", "education", "skyline", "homework", "chat"],
+  "keywords": [
+    "telegram-bot",
+    "mahalla",
+    "verification",
+    "telegraf"
+  ],
   "author": "Antigravity",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
+    "openai": "^4.86.1",
+    "telegraf": "^4.16.3",
+    "uuid": "^8.3.2"
+  }
 }
