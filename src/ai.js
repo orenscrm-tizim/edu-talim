@@ -10,111 +10,103 @@ function setSetting(key, value) {
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(value));
 }
 
-// Local smart heuristic analyzer
-function runLocalHeuristicAnalysis(members) {
-  const phoneMap = new Map();
-  const duplicates = [];
-  const suspicious = [];
+// Memory tracker for consecutive admin AI questions
+const adminAiQuestionCounter = new Map();
 
-  members.forEach(m => {
-    const cleanPhone = m.phone_number.replace(/\D/g, '');
-    if (!phoneMap.has(cleanPhone)) phoneMap.set(cleanPhone, []);
-    phoneMap.get(cleanPhone).push(m);
-  });
+// Interactive AI Chat Assistant for Mahalla
+async function askAiAssistant(question, adminId) {
+  const currentCount = (adminAiQuestionCounter.get(adminId) || 0) + 1;
+  adminAiQuestionCounter.set(adminId, currentCount);
 
-  for (const [phone, list] of phoneMap.entries()) {
-    if (list.length > 1) {
-      duplicates.push({
-        phone: list[0].phone_number,
-        count: list.length,
-        names: list.map(x => `${x.full_name} (TG: ${x.telegram_id})`).join(', ')
-      });
-    }
+  // Check if admin asked 4 or more questions in a row -> Easter egg joke!
+  let funnyJokePrefix = '';
+  if (currentCount >= 4) {
+    adminAiQuestionCounter.set(adminId, 0); // Reset after joke
+    funnyJokePrefix = `😅 <b>Bo'ldi, charchadim, seni savollaringga javob bermayman!</b> 😁\nQani endi bir piyola choy damlab keling-chi, mahalla yordamchisi bo'lib meni tinimsiz savolga tutib charchatdingiz-ku! ☕️😂\n\nMayli, savolingizga javob:\n`;
   }
 
-  const suspiciousKeywords = ['boshqa', 'qoshni', 'qo\'shni', 'notanish', 'test', 'admin', 'bilmayman', 'asdasd', '1234'];
-  members.forEach(m => {
-    const combined = `${m.street} ${m.house_number}`.toLowerCase();
-    if (suspiciousKeywords.some(k => combined.includes(k))) {
-      suspicious.push({
-        name: m.full_name,
-        phone: m.phone_number,
-        address: `${m.street}, ${m.house_number}`
-      });
-    }
-  });
-
-  let message = `🧠 <b>Intellektual Tahlil Natijasi (7 kunlik monitoring):</b>\n\n`;
-  message += `📊 Jami bazadagi a'zolar: <b>${members.length} ta</b>\n\n`;
-
-  if (duplicates.length > 0) {
-    message += `⚠️ <b>Takroriy telefon raqamlar (${duplicates.length} ta):</b>\n`;
-    duplicates.forEach((d, i) => {
-      message += `${i + 1}. Tel: <code>${d.phone}</code> (${d.count} ta hisob)\n   A'zolar: ${d.names}\n\n`;
-    });
-  } else {
-    message += `✅ Takroriy telefon raqamlari aniqlanmadi.\n\n`;
-  }
-
-  if (suspicious.length > 0) {
-    message += `🚩 <b>Shubhali / Begona ko'chalar (${suspicious.length} ta):</b>\n`;
-    suspicious.forEach((s, i) => {
-      message += `${i + 1}. <b>${s.name}</b> (${s.phone})\n   Manzil: ${s.address}\n\n`;
-    });
-  } else {
-    message += `✅ Shubhali manzillar aniqlanmadi.\n\n`;
-  }
-
-  message += `💡 <i>Eslatma: Yakuniy qarorni mahalla yordamchisi qabul qiladi.</i>`;
-  return message;
-}
-
-// Full AI Analysis with OpenAI
-async function analyzeMembers() {
-  const members = db.prepare('SELECT * FROM members ORDER BY created_at DESC').all();
-  if (members.length === 0) {
-    return 'Hozircha hech qanday a\'zo ro\'yxatdan o\'tmagan.';
-  }
+  // Fetch real-time DB data
+  const total = db.prepare('SELECT COUNT(*) as count FROM members').get().count;
+  const pending = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'pending'").get().count;
+  const approved = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'approved'").get().count;
+  const rejected = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'rejected'").get().count;
+  const members = db.prepare('SELECT id, full_name, phone_number, street, house_number, status, telegram_username, created_at FROM members ORDER BY created_at DESC LIMIT 150').all();
 
   const apiKey = getSetting('openai_api_key') || process.env.OPENAI_API_KEY;
+
+  // Local fallback if no OpenAI key
   if (!apiKey) {
-    return runLocalHeuristicAnalysis(members) + '\n\n🔑 <i>OpenAI API kalitini kiritish uchun: /setkey sk-... buyrug\'ini yuboring.</i>';
+    const qLower = question.toLowerCase();
+    let localAns = '';
+
+    if (qLower.includes('tasdiqlandi') || qLower.includes('tasdiqlangan')) {
+      localAns = `✅ Hozirgacha jami <b>${approved} ta</b> a'zo tasdiqlangan.`;
+    } else if (qLower.includes('rad') || qLower.includes('chiqarildi') || qLower.includes('tasdiqlanmadi')) {
+      localAns = `❌ Jami <b>${rejected} ta</b> a'zo rad etilib, guruhdan chiqarilgan.`;
+    } else if (qLower.includes('kutil') || qLower.includes('qancha') || qLower.includes('ariza')) {
+      localAns = `🟡 Hozirda <b>${pending} ta</b> kutilayotgan ariza mavjud (Jami a'zolar: ${total} ta).`;
+    } else {
+      localAns = `📊 Hozirgi ma'lumotlar:\n• Jami: <b>${total} ta</b>\n• Tasdiqlangan: <b>${approved} ta</b>\n• Kutilmoqda: <b>${pending} ta</b>\n• Rad etilgan: <b>${rejected} ta</b>\n\nAniqroq tahlil uchun OpenAI API kalitini ulashingiz mumkin (/setkey).`;
+    }
+
+    return funnyJokePrefix + localAns;
   }
 
   try {
     const openai = new OpenAI({ apiKey });
-    const promptData = members.map(m => ({
-      name: m.full_name,
-      phone: m.phone_number,
-      street: m.street,
-      house: m.house_number,
-      tg_id: m.telegram_id,
-      status: m.status
-    }));
+
+    const promptContext = {
+      mahallaName: 'Damariq Mahallasi',
+      statistics: {
+        totalTargetInGroup: 1662,
+        totalRegistered: total,
+        pendingCount: pending,
+        approvedCount: approved,
+        rejectedCount: rejected
+      },
+      membersData: members
+    };
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
           role: 'system',
-          content: 'Siz Mahalla Telegram guruhi a\'zolarini tekshiruvchi AI mutaxassisisiz. Berilgan ro\'yxatdan takroriy odamlarni, shubhali/begona manzillarni aniqlang va 7 kunlik tekshiruv jarayoni bo\'yicha mahalla yordamchisiga o\'zbek tilida HTML formatda chiroyli, aniq tavsiyalar va xulosa bering.'
+          content: `Siz Damariq Mahallasi Telegram guruhi a'zolarini tasdiqlash bo'yicha aqlli va xushmuomala AI yordamchisisiz.
+Admin (Mahalla Yordamchisi) sizga mahalla a'zolari, ko'chalar, tasdiqlangan/rad etilganlar yoki guruh bo'yicha istalgan savolni beradi.
+Quyidagi real vaqt ma'lumotlar bazasiga tayangan holda o'zbek tilida aniq, qisqa va tushunarli javob bering.
+HTML teglardan foydalaning (<b>, <code>, <i>).
+
+Ma'lumotlar:
+${JSON.stringify(promptContext)}`
         },
         {
           role: 'user',
-          content: JSON.stringify(promptData)
+          content: question
         }
       ]
     });
 
-    return `🧠 <b>OpenAI GPT-4o Tahlil va Xulosasi:</b>\n\n` + response.choices[0].message.content;
+    return funnyJokePrefix + response.choices[0].message.content;
   } catch (err) {
-    console.warn('OpenAI error:', err.message);
-    return runLocalHeuristicAnalysis(members) + `\n\n⚠️ <i>OpenAI xatosi: ${err.message}. Kalitni yangilash uchun: /setkey sk-...</i>`;
+    console.warn('AI error:', err.message);
+    return funnyJokePrefix + `📊 Hozirgi statistika: Tasdiqlanganlar ${approved} ta, Kutilayotganlar ${pending} ta, Rad etilganlar ${rejected} ta. (OpenAI: ${err.message})`;
   }
+}
+
+// Full audit analyzer (duplicates & suspicious)
+async function analyzeMembers() {
+  const members = db.prepare('SELECT * FROM members ORDER BY created_at DESC').all();
+  if (members.length === 0) {
+    return 'Hozircha hech qanday a\'zo ro\'yxatdan o\'tmagan.';
+  }
+
+  return askAiAssistant("Barcha a'zolar ro'yxatini tahlil qil. Takroriy telefonlarni va shubhali/begona ko'chalarni topib, qisqacha tavsiya va xulosa ber.", 'admin');
 }
 
 module.exports = {
   analyzeMembers,
+  askAiAssistant,
   setSetting,
   getSetting
 };
