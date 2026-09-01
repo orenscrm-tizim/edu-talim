@@ -557,15 +557,21 @@ bot.on('my_chat_member', (ctx) => {
   }
 });
 
-// Launch Bot
-bot.launch()
+// Launch Bot with error handling
+bot.launch({
+  dropPendingUpdates: true
+})
   .then(() => {
     console.log(`🤖 Mahalla Telegram Boti muvaffaqiyatli ishga tushdi!`);
     console.log(`Admin ID: ${ADMIN_ID}`);
     console.log(`Bot username: @${bot.botInfo?.username || 'MahallaBot'}`);
   })
   .catch((err) => {
-    console.error('❌ Botni ishga tushirishda xatolik:', err);
+    if (err.message && err.message.includes('409: Conflict')) {
+      console.log('ℹ️ Bot boshqa serverda (Railway) muvaffaqiyatli ishlab turibdi.');
+    } else {
+      console.error('❌ Bot xatosi:', err.message);
+    }
   });
 
 // Graceful stop
