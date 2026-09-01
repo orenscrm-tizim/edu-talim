@@ -319,6 +319,13 @@ async function executeExcelBatch(ctx, rowLimit = null) {
       // 2. Execute Telegram Action
       if (item.newStatus === 'approved') {
         actuallyApproved++;
+        // Agar ilgari guruhdan chiqarilgan bo'lsa, blokni yechish (Unban)
+        if (groupId) {
+          try {
+            await bot.telegram.unbanChatMember(groupId, Number(item.telegram_id));
+          } catch (e) {}
+        }
+
         try {
           await bot.telegram.sendMessage(
             item.telegram_id,
@@ -785,6 +792,14 @@ bot.action(/^approve_(\d+)$/, async (ctx) => {
   if (!member) return ctx.answerCbQuery('A\'zo topilmadi.');
 
   db.prepare("UPDATE members SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?").run(telegramId);
+
+  // Unban if previously kicked
+  const groupId = getSetting('group_id') || DEFAULT_GROUP_ID;
+  if (groupId) {
+    try {
+      await bot.telegram.unbanChatMember(groupId, Number(telegramId));
+    } catch (e) {}
+  }
 
   try {
     await bot.telegram.sendMessage(
