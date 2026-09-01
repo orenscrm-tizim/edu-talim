@@ -48,9 +48,9 @@ db.exec(`
 `);
 
 // Default settings
-const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
+const insertSetting = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
 insertSetting.run('admin_id', process.env.ADMIN_ID || '5744542264');
-insertSetting.run('group_id', process.env.GROUP_ID || '');
+insertSetting.run('group_id', process.env.GROUP_ID || '-1001607742536');
 insertSetting.run('openai_api_key', process.env.OPENAI_API_KEY || '');
 insertSetting.run('mahalla_name', 'Damariq Mahallasi');
 insertSetting.run('deadline_days', '7');

@@ -7,6 +7,7 @@ const { analyzeMembers, setSetting, getSetting } = require('./ai');
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '8230743719:AAElY61ZmjFjdDjEMWg7G-l4f352ovHk0Zo';
 const ADMIN_ID = process.env.ADMIN_ID || '5744542264';
+const DEFAULT_GROUP_ID = process.env.GROUP_ID || '-1001607742536';
 
 const bot = new Telegraf(BOT_TOKEN);
 
@@ -41,7 +42,7 @@ function getAdminKeyboard() {
   return Markup.keyboard([
     ['📊 7-Kunlik Statistika', '📋 Kutilayotgan arizalar'],
     ['📥 Excel yuklab olish', '🧠 AI Tahlil'],
-    ['🔑 OpenAI Kaliti', '⚙️ Guruhni ulash'],
+    ['🔑 OpenAI Kaliti', '⚙️ Ulangan Guruh'],
     ['🔄 Foydalanuvchi sifatida ko\'rish']
   ]).resize();
 }
@@ -329,20 +330,31 @@ bot.command('setkey', async (ctx) => {
   await ctx.reply('✅ <b>OpenAI API kaliti muvaffaqiyatli saqlandi va ulandi!</b>', { parse_mode: 'HTML' });
 });
 
-// --- ADMIN: GURUHNI ULASH ---
-bot.hears('⚙️ Guruhni ulash', async (ctx) => {
+// --- ADMIN: GURUH STATUSI ---
+bot.hears(['⚙️ Guruhni ulash', '⚙️ Ulangan Guruh', '⚙️ Guruh holati'], async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
 
-  const currentGroupId = getSetting('group_id') || 'Kiritilmagan';
+  const currentGroupId = getSetting('group_id') || DEFAULT_GROUP_ID;
+
+  let groupTitle = 'Damariq Mahallasi Guruhi';
+  let isBotAdminInGroup = false;
+
+  try {
+    const chat = await bot.telegram.getChat(currentGroupId);
+    if (chat && chat.title) groupTitle = chat.title;
+    const member = await bot.telegram.getChatMember(currentGroupId, bot.botInfo.id);
+    if (member && (member.status === 'administrator' || member.status === 'creator')) {
+      isBotAdminInGroup = true;
+    }
+  } catch (e) {}
 
   await ctx.reply(
-    `⚙️ <b>Guruhni Botga Ulash Qo'llanmasi:</b>\n\n` +
-    `1. Botni Mahalla Telegram guruhiga <b>Administrator</b> qilib qo'shing.\n` +
-    `2. Botga <b>"Ban Users" (Foydalanuvchilarni bloklash/chiqarish)</b> huquqini bering.\n` +
-    `3. Guruhga <code>/id</code> deb yozing yoki guruh ID sini quyidagi buyruq bilan kiriting:\n\n` +
-    `<code>/setgroup -1001234567890</code>\n\n` +
-    `Hozirgi ulangan Guruh ID: <code>${currentGroupId}</code>`,
+    `🏛 <b>Mahalla Telegram Guruhi Holati:</b>\n\n` +
+    `• <b>Guruh Nomi:</b> ${groupTitle}\n` +
+    `• <b>Guruh ID:</b> <code>${currentGroupId}</code>\n` +
+    `• <b>Bot Admin Holati:</b> ${isBotAdminInGroup ? '✅ Bot Guruhda Admin (Chiqarish huquqi faol)' : '⚠️ Botni guruhga Admin qilish kerak'}\n\n` +
+    `<i>Barcha tasdiqlanmagan yoki rad etilgan shaxslar ushbu guruhdan avtomatik chiqariladi.</i>`,
     { parse_mode: 'HTML' }
   );
 });
