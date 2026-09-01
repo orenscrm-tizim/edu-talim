@@ -711,6 +711,6 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Skyline Education Backend running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Skyline Education Backend running on http://0.0.0.0:${PORT}`);
 });

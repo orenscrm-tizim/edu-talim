@@ -1,12 +1,15 @@
-const API_BASE = import.meta.env.VITE_API_URL 
-  ? `${import.meta.env.VITE_API_URL.replace(/\/$/, '')}/api` 
-  : '/api';
+const PRODUCTION_BACKEND_URL = 'https://edu-talim-production.up.railway.app';
+
+const API_SERVER_URL = import.meta.env.VITE_API_URL 
+  ? import.meta.env.VITE_API_URL.replace(/\/$/, '')
+  : (typeof window !== 'undefined' && window.location.hostname !== 'localhost' ? PRODUCTION_BACKEND_URL : '');
+
+const API_BASE = API_SERVER_URL ? `${API_SERVER_URL}/api` : '/api';
 
 export const getFileUrl = (url) => {
   if (!url) return '';
   if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:')) return url;
-  const base = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace(/\/$/, '') : '';
-  return `${base}${url}`;
+  return `${API_SERVER_URL}${url}`;
 };
 
 export const api = {
