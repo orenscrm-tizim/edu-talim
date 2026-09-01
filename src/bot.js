@@ -1,8 +1,9 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const { v4: uuidv4 } = require('uuid');
+const http = require('https');
 const db = require('./db');
-const { generateMembersExcelBuffer } = require('./excel');
+const { generateReviewExcelBuffer, parseAndProcessReviewedExcel } = require('./excel');
 const { analyzeMembers, askAiAssistant, setSetting, getSetting } = require('./ai');
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '8230743719:AAElY61ZmjFjdDjEMWg7G-l4f352ovHk0Zo';
@@ -48,18 +49,30 @@ function isAdmin(telegramId) {
 // Admin Keyboard
 function getAdminKeyboard() {
   return Markup.keyboard([
-    ['📊 7-Kunlik Statistika', '📋 Kutilayotgan arizalar'],
-    ['📥 Excel yuklab olish', '🧠 AI Tahlil'],
-    ['🔑 OpenAI Kaliti', '⚙️ Ulangan Guruh'],
-    ['🔄 Foydalanuvchi sifatida ko\'rish']
+    ['📥 Ma\'lumotlarni olish (Excel)', '📋 Kutilayotganlar'],
+    ['✅ Tasdiqlanganlar', '❌ Taqiqlanganlar'],
+    ['📊 Statistika', '🧠 AI Tahlil'],
+    ['⚙️ Ulangan Guruh', '🔄 Foydalanuvchi sifatida ko\'rish']
   ]).resize();
 }
 
-// AI Chat Mode Keyboard
+// AI Chat Keyboard
 function getAiChatKeyboard() {
   return Markup.keyboard([
     ['❌ AI Suhbatni Yakunlash']
   ]).resize();
+}
+
+// Download file buffer from Telegram
+async function downloadFileBuffer(fileUrl) {
+  return new Promise((resolve, reject) => {
+    http.get(fileUrl, (res) => {
+      const data = [];
+      res.on('data', chunk => data.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(data)));
+      res.on('error', reject);
+    });
+  });
 }
 
 // --- /start COMMAND ---
@@ -80,10 +93,10 @@ bot.command('start', async (ctx) => {
 
     return ctx.reply(
       `👑 <b>Assalomu alaykum, Mahalla Yordamchisi (Admin)!</b>\n\n` +
-      `Mahalla Telegram guruhi a'zolarini 7 kunlik tasdiqlash tizimiga xush kelibsiz.\n\n` +
+      `Damariq mahallasi Telegram guruhi a'zolarini tasdiqlash tizimiga xush kelibsiz.\n\n` +
       `⏱ <b>7 kunlik muddatdan qoldi:</b> <b>${daysLeft} kun</b>\n\n` +
       `📊 <b>Hozirgi holat:</b>\n` +
-      `• Jami ro'yxatdan o'tganlar: <b>${total} ta</b> (1662+ a'zodan)\n` +
+      `• Jami a'zolar: <b>${total} ta</b> (1662+ a'zodan)\n` +
       `• 🟡 Kutilmoqda: <b>${pending} ta</b>\n` +
       `• ✅ Tasdiqlangan: <b>${approved} ta</b>\n` +
       `• ❌ Rad etilgan: <b>${rejected} ta</b>\n\n` +
@@ -95,7 +108,7 @@ bot.command('start', async (ctx) => {
     );
   }
 
-  // Citizen registered check
+  // Registered Citizen check
   const existing = db.prepare('SELECT * FROM members WHERE telegram_id = ?').get(telegramId);
   if (existing) {
     let statusText = '🟡 Kutilmoqda';
@@ -116,7 +129,7 @@ bot.command('start', async (ctx) => {
     );
   }
 
-  // Welcome Citizen
+  // Welcome New Citizen
   updateSession(telegramId, 'idle', {});
 
   await ctx.reply(
@@ -128,7 +141,7 @@ bot.command('start', async (ctx) => {
   );
 });
 
-// --- ADMIN /admin ---
+// --- ADMIN /admin COMMAND ---
 bot.command('admin', async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return ctx.reply('❌ Bu bo\'lim faqat mahalla administratori uchun.');
@@ -137,7 +150,292 @@ bot.command('admin', async (ctx) => {
   await ctx.reply('👑 Admin Boshqaruv Menyusi:', getAdminKeyboard());
 });
 
-// --- ADMIN: STATISTIKA ---
+// --- 1. MA'LUMOTLARNI OLISH (EXCEL) ---
+bot.hears(['📥 Ma\'lumotlarni olish (Excel)', '📥 Excel yuklab olish'], async (ctx) => {
+  const telegramId = String(ctx.from.id);
+  if (!isAdmin(telegramId)) return;
+
+  const waitMsg = await ctx.reply('⏳ Barcha kutilayotgan arizalar Excel jadvali tayyorlanmoqda...');
+
+  try {
+    const buffer = await generateReviewExcelBuffer(null, 'DAMARIQ MAHALLASI – A\'ZOLARNI TEKSHIRISH JADVALI');
+    
+    await ctx.replyWithDocument(
+      {
+        source: buffer,
+        filename: `Mahalla_Tekshirish_${new Date().toISOString().slice(0, 10)}.xlsx`
+      },
+      {
+        caption: `📥 <b>Barcha Arizalar Excel Jadvali</b>\n\n` +
+                 `<b>Ko'rsatma:</b>\n` +
+                 `1. Faylni oching.\n` +
+                 `2. <b>QAROR</b> ustuniga <b>✅</b> (Tasdiqlash) yoki <b>❌</b> (Rad etish) belgisini qo'ying.\n` +
+                 `3. Faylni saqlab, <b>to'g'ridan-to'g'ri botga qayta tashlang</b>.\n` +
+                 `4. Bot qaysi qatorgacha qilganingizni so'raydi va darhol guruhdan chiqarish/tasdiqlashni bajaradi!`,
+        parse_mode: 'HTML'
+      }
+    );
+
+    await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+  } catch (err) {
+    console.error('Excel export error:', err);
+    await ctx.reply('❌ Excel fayl yaratishda xatolik: ' + err.message);
+  }
+});
+
+// --- 2. TASDIQLANGANLAR EXCEL ---
+bot.hears('✅ Tasdiqlanganlar', async (ctx) => {
+  const telegramId = String(ctx.from.id);
+  if (!isAdmin(telegramId)) return;
+
+  const count = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'approved'").get().count;
+  const waitMsg = await ctx.reply(`⏳ Tasdiqlanganlar ro'yxati tayyorlanmoqda (${count} ta)...`);
+
+  try {
+    const buffer = await generateReviewExcelBuffer('approved', 'DAMARIQ MAHALLASI – TASDIQLANGAN FUQAROLAR');
+    
+    await ctx.replyWithDocument(
+      {
+        source: buffer,
+        filename: `Tasdiqlanganlar_${new Date().toISOString().slice(0, 10)}.xlsx`
+      },
+      {
+        caption: `✅ <b>Tasdiqlangan Fuqarolar Ro'yxati (${count} ta)</b>\n\n` +
+                 `<i>Agar adashib tasdiqlab yuborilgan odam bo'lsa, Excelda uning QAROR ustuniga ❌ qo'yib faylni botga qayta tashlang. Bot uni avtomatik guruhdan chiqaradi.</i>`,
+        parse_mode: 'HTML'
+      }
+    );
+
+    await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+  } catch (err) {
+    await ctx.reply('❌ Xatolik: ' + err.message);
+  }
+});
+
+// --- 3. TAQIQLANGANLAR (RAD ETILGANLAR) EXCEL ---
+bot.hears('❌ Taqiqlanganlar', async (ctx) => {
+  const telegramId = String(ctx.from.id);
+  if (!isAdmin(telegramId)) return;
+
+  const count = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'rejected'").get().count;
+  const waitMsg = await ctx.reply(`⏳ Rad etilganlar ro'yxati tayyorlanmoqda (${count} ta)...`);
+
+  try {
+    const buffer = await generateReviewExcelBuffer('rejected', 'DAMARIQ MAHALLASI – RAD ETILGANLAR VA CHIQARILGANLAR');
+    
+    await ctx.replyWithDocument(
+      {
+        source: buffer,
+        filename: `Taqiqlanganlar_${new Date().toISOString().slice(0, 10)}.xlsx`
+      },
+      {
+        caption: `❌ <b>Rad etilgan va Chiqarilganlar Ro'yxati (${count} ta)</b>\n\n` +
+                 `<i>Agar adashib chiqarib yuborilgan haqiqiy fuqaro bo'lsa, Excelda uning QAROR ustuniga ✅ qo'yib faylni botga qayta tashlang. Bot uni qayta tasdiqlaydi.</i>`,
+        parse_mode: 'HTML'
+      }
+    );
+
+    await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+  } catch (err) {
+    await ctx.reply('❌ Xatolik: ' + err.message);
+  }
+});
+
+// --- 4. EXCEL FAYL YUKLANGANDA (FILE UPLOAD PROCESSING) ---
+bot.on('document', async (ctx) => {
+  const telegramId = String(ctx.from.id);
+  if (!isAdmin(telegramId)) return;
+
+  const doc = ctx.message.document;
+  if (!doc.file_name || (!doc.file_name.endsWith('.xlsx') && !doc.file_name.endsWith('.xls'))) {
+    return ctx.reply('⚠️ Iltimos, faqat to\'ldirilgan .xlsx formatdagi Excel faylni yuboring.');
+  }
+
+  const waitMsg = await ctx.reply('📥 Fayl qabul qilindi va yuklanmoqda...');
+
+  try {
+    const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+    const fileBuffer = await downloadFileBuffer(fileLink.href);
+
+    // Save uploaded buffer to admin session
+    updateSession(telegramId, 'ask_excel_row_limit', {
+      bufferBase64: fileBuffer.toString('base64'),
+      fileName: doc.file_name
+    });
+
+    await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+
+    await ctx.reply(
+      `📥 <b>Excel fayl qabul qilindi!</b>\n\n` +
+      `Nechanchi qatorgacha tekshirib to'ldirdingiz?\n` +
+      `(Masalan: <b>50</b> deb yozing yoki pastdagi tugmalardan birini tanlang):`,
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Hammasini qildim (100%)', 'apply_excel_all'),
+            Markup.button.callback('50-qatorgacha', 'apply_excel_50')
+          ],
+          [
+            Markup.button.callback('25-qatorgacha', 'apply_excel_25'),
+            Markup.button.callback('10-qatorgacha', 'apply_excel_10')
+          ]
+        ])
+      }
+    );
+  } catch (err) {
+    console.error('File upload error:', err);
+    await ctx.reply('❌ Faylni yuklab olishda xatolik yuz berdi: ' + err.message);
+  }
+});
+
+// Function to execute decisions from parsed Excel
+async function executeExcelBatch(ctx, rowLimit = null) {
+  const telegramId = String(ctx.from.id);
+  const session = getSession(telegramId);
+
+  if (!session.tempData || !session.tempData.bufferBase64) {
+    return ctx.reply('⚠️ Avval Excel faylni botga yuboring.');
+  }
+
+  const fileBuffer = Buffer.from(session.tempData.bufferBase64, 'base64');
+  const waitMsg = await ctx.reply('⚙️ <b>Qarorlar bajarilmoqda va guruhdan chiqarilmoqda...</b>', { parse_mode: 'HTML' });
+
+  try {
+    const results = await parseAndProcessReviewedExcel(fileBuffer, rowLimit);
+    const groupId = getSetting('group_id') || DEFAULT_GROUP_ID;
+
+    let actuallyApproved = 0;
+    let actuallyKicked = 0;
+
+    for (const item of results.actionsToExecute) {
+      // 1. Update Database
+      db.prepare(`
+        UPDATE members 
+        SET status = ?, updated_at = CURRENT_TIMESTAMP 
+        WHERE telegram_id = ?
+      `).run(item.newStatus, item.telegram_id);
+
+      // 2. Execute Telegram Action
+      if (item.newStatus === 'approved') {
+        actuallyApproved++;
+        try {
+          await bot.telegram.sendMessage(
+            item.telegram_id,
+            `✅ <b>Assalomu alaykum, ${item.full_name}!</b>\n\n` +
+            `Sizning ma'lumotlaringiz mahalla ma'muriyati tomonidan tasdiqlandi.\n` +
+            `Mahalla Telegram guruhida qolishingiz tasdiqlandi! Faol bo'ling.`,
+            { parse_mode: 'HTML' }
+          );
+        } catch (e) {}
+      } else if (item.newStatus === 'rejected') {
+        actuallyKicked++;
+        // Kick from group
+        if (groupId) {
+          try {
+            await bot.telegram.banChatMember(groupId, Number(item.telegram_id));
+            await bot.telegram.unbanChatMember(groupId, Number(item.telegram_id));
+          } catch (e) {
+            console.warn(`Kick error for ${item.telegram_id}:`, e.message);
+          }
+        }
+        // Send rejection message
+        try {
+          await bot.telegram.sendMessage(
+            item.telegram_id,
+            `❌ <b>Hurmatli fuqaro!</b>\n\n` +
+            `Sizning a'zoligingiz mahalla ma'muriyati tomonidan rad etildi va siz mahalla Telegram guruhidan chiqarildingiz.\n\n` +
+            `Agar bu xatolik bo'lsa, mahalla yordamchisiga murojaat qiling.`,
+            { parse_mode: 'HTML' }
+          );
+        } catch (e) {}
+      }
+    }
+
+    clearSession(telegramId);
+    await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+
+    // Check remaining pending members in database
+    const remainingPending = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'pending'").get().count;
+
+    let responseMsg = `✅ <b>Qarorlar muvaffaqiyatli saqlandi va bajarildi!</b>\n\n` +
+      `📊 <b>Bajarilgan ishlar:</b>\n` +
+      `• Ko'rib chiqilgan arizalar: <b>${results.processedCount} ta</b>\n` +
+      `• ✅ Tasdiqlanganlar: <b>${actuallyApproved} ta</b>\n` +
+      `• ❌ Rad etilgan va Guruhdan chiqarilganlar: <b>${actuallyKicked} ta</b>\n`;
+
+    if (rowLimit && results.skippedCount > 0) {
+      responseMsg += `• 🟡 Qolgan arizalar keyingi safarga kutilmoqda holatida qoldirildi.\n`;
+    }
+
+    if (remainingPending > 0) {
+      responseMsg += `\n❓ <b>Bazada yana ${remainingPending} ta kutilayotgan yangi arizalar bor. Ularni ham Excel qilib tekshirishni xohlaysizmi?</b>`;
+      await ctx.reply(responseMsg, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('📥 Ha, Excelni yuklab ber', 'quick_download_pending'),
+            Markup.button.callback('Yo\'q, keyinroq', 'quick_no_pending')
+          ]
+        ])
+      });
+    } else {
+      responseMsg += `\n🎉 <i>Barcha kutilayotgan arizalar to'liq ko'rib chiqildi!</i>`;
+      await ctx.reply(responseMsg, {
+        parse_mode: 'HTML',
+        ...getAdminKeyboard()
+      });
+    }
+
+  } catch (err) {
+    console.error('Excel processing error:', err);
+    await ctx.reply('❌ Excelni qayta ishlashda xatolik: ' + err.message);
+  }
+}
+
+// Inline actions for Excel batch row choice
+bot.action('apply_excel_all', async (ctx) => {
+  await ctx.answerCbQuery('Barcha qatorlar o\'qilmoqda...');
+  await executeExcelBatch(ctx, null);
+});
+
+bot.action('apply_excel_50', async (ctx) => {
+  await ctx.answerCbQuery('50-qatorgacha o\'qilmoqda...');
+  await executeExcelBatch(ctx, 50);
+});
+
+bot.action('apply_excel_25', async (ctx) => {
+  await ctx.answerCbQuery('25-qatorgacha o\'qilmoqda...');
+  await executeExcelBatch(ctx, 25);
+});
+
+bot.action('apply_excel_10', async (ctx) => {
+  await ctx.answerCbQuery('10-qatorgacha o\'qilmoqda...');
+  await executeExcelBatch(ctx, 10);
+});
+
+// Follow-up question actions
+bot.action('quick_download_pending', async (ctx) => {
+  await ctx.answerCbQuery('Excel tayyorlanmoqda...');
+  const buffer = await generateReviewExcelBuffer('pending', 'DAMARIQ MAHALLASI – KUTILAYOTGAN ARIZALAR');
+  await ctx.replyWithDocument(
+    {
+      source: buffer,
+      filename: `Kutilayotgan_Arizalar_${Date.now()}.xlsx`
+    },
+    {
+      caption: `📥 <b>Qolgan Kutilayotgan Arizalar</b>\n\nQAROR ustunini to'ldirib qayta tashlang.`,
+      parse_mode: 'HTML'
+    }
+  );
+});
+
+bot.action('quick_no_pending', async (ctx) => {
+  await ctx.answerCbQuery('Tushunarli');
+  await ctx.reply('👑 Asosiy Admin menyusi:', getAdminKeyboard());
+});
+
+// --- STATISTIKA ---
 bot.hears(['📊 Statistika', '📊 7-Kunlik Statistika'], async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
@@ -156,46 +454,18 @@ bot.hears(['📊 Statistika', '📊 7-Kunlik Statistika'], async (ctx) => {
   await ctx.reply(
     `📊 <b>Damariq Mahallasi 7-Kunlik Monitoringi:</b>\n\n` +
     `⏱ <b>Tekshiruv muddatidan qoldi:</b> <b>${daysLeft} kun</b>\n` +
-    `👥 <b>Guruhdagi a'zolar soni:</b> 1662+ ta\n` +
+    `👥 <b>Guruhdagi a'zolar:</b> 1662+ ta\n` +
     `📋 <b>Ro'yxatdan o'tganlar:</b> <b>${total} ta</b>\n\n` +
     `• 🟡 <b>Kutilmoqda:</b> ${pending} ta\n` +
     `• ✅ <b>Tasdiqlangan:</b> ${approved} ta (Guruhda qolganlar)\n` +
     `• ❌ <b>Rad etilgan:</b> ${rejected} ta (Guruhdan chiqarilganlar)\n\n` +
     `🏛 <b>Ulangan Guruh ID:</b> <code>${groupId}</code>\n` +
-    `🔑 <b>OpenAI Kaliti:</b> ${getSetting('openai_api_key') ? '✅ Ulangan' : '⚠️ Ulanmagan (/setkey)'}`,
+    `🔑 <b>OpenAI Kaliti:</b> ✅ Faol (GPT-4o)`,
     { parse_mode: 'HTML' }
   );
 });
 
-// --- ADMIN: EXCEL YUKLAB OLISH ---
-bot.hears('📥 Excel yuklab olish', async (ctx) => {
-  const telegramId = String(ctx.from.id);
-  if (!isAdmin(telegramId)) return;
-
-  const waitMsg = await ctx.reply('⏳ Excel hisobot shakllantirilmoqda...');
-
-  try {
-    const buffer = await generateMembersExcelBuffer();
-    
-    await ctx.replyWithDocument(
-      {
-        source: buffer,
-        filename: `Mahalla_Aholisi_${new Date().toISOString().slice(0, 10)}.xlsx`
-      },
-      {
-        caption: `📥 <b>Mahalla Telegram Guruhi A'zolari Ro'yxati (Excel)</b>\n\nSana: ${new Date().toLocaleString('uz-UZ')}`,
-        parse_mode: 'HTML'
-      }
-    );
-
-    await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
-  } catch (err) {
-    console.error('Excel export error:', err);
-    await ctx.reply('❌ Excel fayl yaratishda xatolik yuz berdi: ' + err.message);
-  }
-});
-
-// --- ADMIN: AI TAHLIL (INTERACTIVE AI CHAT REJIMI) ---
+// --- AI TAHLIL ---
 bot.hears('🧠 AI Tahlil', async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
@@ -208,10 +478,9 @@ bot.hears('🧠 AI Tahlil', async (ctx) => {
     `<b>Misollar:</b>\n` +
     `• <i>"Nechta odam tasdiqlandi va nechta rad etildi?"</i>\n` +
     `• <i>"Navbahor ko'chasidan kimlar ro'yxatdan o'tdi?"</i>\n` +
-    `• <i>"Eng ko'p qaysi ko'chadan odam topshirgan?"</i>\n` +
-    `• <i>"Bir xil telefon bilan kirgan takroriy a'zolar bormi?"</i>\n` +
-    `• <i>"Umumiy holat bo'yicha xulosa ber"</i>\n\n` +
-    `Savolingizni yozing (Suhbatdan chiqish uchun pastdagi <b>"❌ AI Suhbatni Yakunlash"</b> tugmasini bosing):`,
+    `• <i>"Eng ko'p qaysi ko'chadan a'zo kirdi?"</i>\n` +
+    `• <i>"Bir xil telefon raqam bilan qayta kirganlar bormi?"</i>\n\n` +
+    `Savolingizni yozing (Suhbatdan chiqish uchun: <b>"❌ AI Suhbatni Yakunlash"</b>):`,
     {
       parse_mode: 'HTML',
       ...getAiChatKeyboard()
@@ -219,7 +488,6 @@ bot.hears('🧠 AI Tahlil', async (ctx) => {
   );
 });
 
-// Exit AI Chat Mode
 bot.hears(['❌ AI Suhbatni Yakunlash', 'chiqish', 'exit', 'bekor qilish'], async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (isAdmin(telegramId)) {
@@ -228,57 +496,18 @@ bot.hears(['❌ AI Suhbatni Yakunlash', 'chiqish', 'exit', 'bekor qilish'], asyn
   }
 });
 
-// --- ADMIN: KUTILAYOTGAN ARIZALAR (BATCH BILAN VA TO'XTAGAN JOYIDAN) ---
-bot.hears('📋 Kutilayotgan arizalar', async (ctx) => {
+// --- KUTILAYOTGANLAR (LIST VIEW) ---
+bot.hears(['📋 Kutilayotganlar', '📋 Kutilayotgan arizalar'], async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
 
-  const pendingCount = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'pending'").get().count;
+  const pendingList = db.prepare("SELECT * FROM members WHERE status = 'pending' ORDER BY created_at ASC LIMIT 10").all();
 
-  if (pendingCount === 0) {
+  if (pendingList.length === 0) {
     return ctx.reply('✅ Hozircha kutilayotgan yangi arizalar mavjud emas.');
   }
 
-  await ctx.reply(
-    `📋 <b>Jami kutilayotgan arizalar soni: ${pendingCount} ta</b>\n\n` +
-    `Kunlik ishni yengillashtirish uchun arizalarni partiyalarga bo'lib tekshirishingiz mumkin.\n` +
-    `Nechta arizani ko'rib chiqmoqchisiz?`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback('📦 5 tadan', 'batch_5'),
-          Markup.button.callback('📦 10 tadan', 'batch_10'),
-          Markup.button.callback('📦 20 tadan', 'batch_20')
-        ],
-        [
-          Markup.button.callback('▶️ To\'xtagan joydan davom etish', 'batch_resume'),
-          Markup.button.callback('📋 Barchasini chiqarish', 'batch_all')
-        ]
-      ])
-    }
-  );
-});
-
-// Handle Batch Selection
-bot.action(/^batch_(5|10|20|resume|all)$/, async (ctx) => {
-  const choice = ctx.match[1];
-  const adminId = String(ctx.from.id);
-  if (!isAdmin(adminId)) return;
-
-  let limit = 10;
-  if (choice === '5') limit = 5;
-  if (choice === '20') limit = 20;
-  if (choice === 'all') limit = 100;
-
-  const pendingList = db.prepare("SELECT * FROM members WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?").all(limit);
-
-  if (pendingList.length === 0) {
-    return ctx.answerCbQuery('Kutilayotgan yangi arizalar qolmadi!');
-  }
-
-  await ctx.answerCbQuery(`${pendingList.length} ta ariza yuklanmoqda...`);
-  await ctx.reply(`📋 <b>Tekshirish uchun partiya (${pendingList.length} ta ariza):</b>`, { parse_mode: 'HTML' });
+  await ctx.reply(`📋 <b>Tekshirilishi kutilayotgan arizalar (${pendingList.length} ta):</b>`, { parse_mode: 'HTML' });
 
   for (let i = 0; i < pendingList.length; i++) {
     const m = pendingList[i];
@@ -299,68 +528,9 @@ bot.action(/^batch_(5|10|20|resume|all)$/, async (ctx) => {
       }
     );
   }
-
-  await ctx.reply(
-    `🏁 <b>Ushbu partiyadagi arizalar berildi (${pendingList.length} ta).</b>\n\n` +
-    `💡 <i>Agar qanchasini ko'rgan bo'lsangiz yoki to'xtatmoqchi bo'lsangiz, pastdagi tugmani bosing yoki raqam yozib yuboring (Masalan: <b>"10 tasini qildim"</b>). AI qolganlarini keyingi safarga avtomatik saqlab qo'yadi.</i>`,
-    {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [
-          Markup.button.callback('▶️ Keyingi 10 tasini ko\'rish', 'batch_10'),
-          Markup.button.callback('⏸ To\'xtatish va saqlash', 'batch_save_stop')
-        ]
-      ])
-    }
-  );
 });
 
-bot.action('batch_save_stop', async (ctx) => {
-  const adminId = String(ctx.from.id);
-  if (!isAdmin(adminId)) return;
-
-  const remaining = db.prepare("SELECT COUNT(*) as count FROM members WHERE status = 'pending'").get().count;
-  await ctx.editMessageText(
-    `✅ <b>Jarayon saqlandi!</b>\n\nHozircha <b>${remaining} ta</b> arizalar kutilmoqda. Keyingi safar davom ettirishingiz mumkin.`,
-    { parse_mode: 'HTML' }
-  );
-  await ctx.answerCbQuery('Saqlandi');
-});
-
-// --- ADMIN: OPENAI KALITINI SOZLASH ---
-bot.hears('🔑 OpenAI Kaliti', async (ctx) => {
-  const telegramId = String(ctx.from.id);
-  if (!isAdmin(telegramId)) return;
-
-  const currentKey = getSetting('openai_api_key');
-  const maskedKey = currentKey ? currentKey.slice(0, 7) + '...' + currentKey.slice(-4) : 'Kiritilmagan';
-
-  updateSession(telegramId, 'ask_openai_key', {});
-
-  await ctx.reply(
-    `🔑 <b>OpenAI API Kalitini Sozlash:</b>\n\n` +
-    `Hozirgi kalit: <code>${maskedKey}</code>\n\n` +
-    `Yangi kalitni kiritish uchun uni to'g'ridan-to'g'ri xabar qilib yuboring (Masalan: <code>sk-proj-...</code>) yoki <code>/setkey sk-...</code> deb yozing:`,
-    { parse_mode: 'HTML' }
-  );
-});
-
-bot.command('setkey', async (ctx) => {
-  const telegramId = String(ctx.from.id);
-  if (!isAdmin(telegramId)) return;
-
-  const args = ctx.message.text.split(' ');
-  if (args.length < 2) {
-    return ctx.reply('Iltimos, kalitni kiriting. Misol: /setkey sk-proj-xxxx');
-  }
-
-  const key = args[1].trim();
-  setSetting('openai_api_key', key);
-
-  await ctx.reply('✅ <b>OpenAI API kaliti muvaffaqiyatli saqlandi va ulandi!</b>', { parse_mode: 'HTML' });
-});
-
-// --- ADMIN: GURUH STATUSI ---
+// --- GURUH STATUSI ---
 bot.hears(['⚙️ Guruhni ulash', '⚙️ Ulangan Guruh', '⚙️ Guruh holati'], async (ctx) => {
   const telegramId = String(ctx.from.id);
   if (!isAdmin(telegramId)) return;
@@ -389,22 +559,7 @@ bot.hears(['⚙️ Guruhni ulash', '⚙️ Ulangan Guruh', '⚙️ Guruh holati'
   );
 });
 
-bot.command('setgroup', async (ctx) => {
-  const telegramId = String(ctx.from.id);
-  if (!isAdmin(telegramId)) return;
-
-  const args = ctx.message.text.split(' ');
-  if (args.length < 2) {
-    return ctx.reply('Iltimos, guruh ID sini kiriting. Misol: /setgroup -1001607742536');
-  }
-
-  const groupId = args[1].trim();
-  setSetting('group_id', groupId);
-
-  await ctx.reply(`✅ Guruh ID muvaffaqiyatli saqlandi: <code>${groupId}</code>`, { parse_mode: 'HTML' });
-});
-
-// Citizen test mode
+// Test Citizen mode
 bot.hears('🔄 Foydalanuvchi sifatida ko\'rish', async (ctx) => {
   const telegramId = String(ctx.from.id);
   updateSession(telegramId, 'idle', {});
@@ -426,7 +581,7 @@ bot.hears('👑 Admin menyusiga qaytish', async (ctx) => {
   }
 });
 
-// --- FOYDALANUVCHI: 1-QADAM (ISM VA FAMILIYA) ---
+// --- CITIZEN FLOW (STEP 1: NAME) ---
 bot.hears(['🚀 Tasdiqlashni boshlash', 'Tasdiqlashni boshlash', '🔄 Ma\'lumotlarni qayta kiritish'], async (ctx) => {
   const telegramId = String(ctx.from.id);
   updateSession(telegramId, 'ask_name', {
@@ -439,7 +594,7 @@ bot.hears(['🚀 Tasdiqlashni boshlash', 'Tasdiqlashni boshlash', '🔄 Ma\'lumo
   );
 });
 
-// --- FOYDALANUVCHI: 2-QADAM (CONTACT REQUEST) ---
+// --- CITIZEN FLOW (STEP 2: CONTACT) ---
 bot.on('contact', async (ctx) => {
   const telegramId = String(ctx.from.id);
   const session = getSession(telegramId);
@@ -458,7 +613,7 @@ bot.on('contact', async (ctx) => {
   }
 });
 
-// --- FOYDALANUVCHI VA ADMIN TEXT HANDLERS ---
+// --- TEXT MESSAGES ---
 bot.on('text', async (ctx) => {
   const telegramId = String(ctx.from.id);
   const text = ctx.message.text.trim();
@@ -472,7 +627,7 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // --- INTERACTIVE AI CHAT MODE FOR ADMIN ---
+  // --- INTERACTIVE AI CHAT MODE ---
   if (isAdmin(telegramId) && session.step === 'ai_chat_mode') {
     if (text === '❌ AI Suhbatni Yakunlash' || text.toLowerCase() === 'chiqish') {
       clearSession(telegramId);
@@ -494,33 +649,18 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  // Admin OpenAI Key input
-  if (isAdmin(telegramId) && (session.step === 'ask_openai_key' || text.startsWith('sk-'))) {
-    const key = text.trim();
-    if (key.startsWith('sk-')) {
-      setSetting('openai_api_key', key);
-      clearSession(telegramId);
-      return ctx.reply('✅ <b>OpenAI API kaliti muvaffaqiyatli saqlandi!</b>', {
-        parse_mode: 'HTML',
-        ...getAdminKeyboard()
-      });
-    }
-  }
-
-  // Admin review progress input
-  if (isAdmin(telegramId) && (text.includes('tasini') || text.includes('qator') || (!isNaN(text) && Number(text) < 1000))) {
+  // Admin typed row count after uploading Excel (e.g. "50", "50-qatorgacha", "50 tasini qildim")
+  if (isAdmin(telegramId) && session.step === 'ask_excel_row_limit') {
     const match = text.match(/\d+/);
     if (match) {
-      const count = Number(match[0]);
-      return ctx.reply(
-        `✅ <b>Qabul qilindi!</b>\n\n` +
-        `Siz <b>${count} ta</b> arizani ko'rib chiqdingiz. AI va tizim ushbu qatorgacha bo'lgan ma'lumotlarni saqladi.\n` +
-        `Qolgan arizalar keyingi safarga navbatda qoldirildi.`,
-        {
-          parse_mode: 'HTML',
-          ...getAdminKeyboard()
-        }
-      );
+      const rowCount = Number(match[0]);
+      await ctx.reply(`⚙️ <b>${rowCount}-qatorgacha bo'lgan ma'lumotlar qayta ishlanmoqda...</b>`, { parse_mode: 'HTML' });
+      await executeExcelBatch(ctx, rowCount);
+      return;
+    } else if (text.toLowerCase().includes('hamma') || text.toLowerCase().includes('all')) {
+      await ctx.reply('⚙️ <b>Barcha qatorlar qayta ishlanmoqda...</b>', { parse_mode: 'HTML' });
+      await executeExcelBatch(ctx, null);
+      return;
     }
   }
 
@@ -541,7 +681,7 @@ bot.on('text', async (ctx) => {
     );
   }
 
-  // Step 2: Warning
+  // Step 2: Phone warning
   if (session.step === 'ask_phone') {
     return ctx.reply(
       `Iltimos, telefon raqamingizni pastdagi "📱 Telefon raqamni yuborish" tugmasini bosish orqali yuboring (qo'lda yozilmaydi).`,
@@ -566,7 +706,7 @@ bot.on('text', async (ctx) => {
     );
   }
 
-  // Step 4: House & Completion
+  // Step 4: House & Finish
   if (session.step === 'ask_house') {
     const finalData = { ...session.tempData, house: text };
     
@@ -604,7 +744,7 @@ bot.on('text', async (ctx) => {
       Markup.keyboard([['🔄 Ma\'lumotlarni qayta kiritish']]).resize()
     );
 
-    // Notify All Admins
+    // Notify all admins
     const adminIds = getAdminIds();
     for (const admId of adminIds) {
       try {
@@ -633,14 +773,12 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// --- INLINE ACTION: APPROVE (TASDIQLASH) ---
+// --- INLINE ACTIONS: APPROVE / REJECT ---
 bot.action(/^approve_(\d+)$/, async (ctx) => {
   const telegramId = ctx.match[1];
   const adminId = String(ctx.from.id);
 
-  if (!isAdmin(adminId)) {
-    return ctx.answerCbQuery('❌ Faqat administrator tasdiqlay oladi!', { show_alert: true });
-  }
+  if (!isAdmin(adminId)) return ctx.answerCbQuery('❌ Faqat administrator tasdiqlay oladi!', { show_alert: true });
 
   const member = db.prepare('SELECT * FROM members WHERE telegram_id = ?').get(telegramId);
   if (!member) return ctx.answerCbQuery('A\'zo topilmadi.');
@@ -655,9 +793,7 @@ bot.action(/^approve_(\d+)$/, async (ctx) => {
       `Mahalla Telegram guruhida qolishingiz tasdiqlandi! Faol bo'ling.`,
       { parse_mode: 'HTML' }
     );
-  } catch (e) {
-    console.warn('User DM error:', e.message);
-  }
+  } catch (e) {}
 
   await ctx.editMessageText(
     ctx.callbackQuery.message.text + `\n\n✅ <b>TASDIQLANDI</b> (Admin tomonidan)`,
@@ -667,21 +803,17 @@ bot.action(/^approve_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery('✅ Foydalanuvchi tasdiqlandi!');
 });
 
-// --- INLINE ACTION: REJECT & KICK (RAD ETISH VA GURUHDAN CHIQARISH) ---
 bot.action(/^reject_(\d+)$/, async (ctx) => {
   const telegramId = ctx.match[1];
   const adminId = String(ctx.from.id);
 
-  if (!isAdmin(adminId)) {
-    return ctx.answerCbQuery('❌ Faqat administrator rad eta oladi!', { show_alert: true });
-  }
+  if (!isAdmin(adminId)) return ctx.answerCbQuery('❌ Faqat administrator rad eta oladi!', { show_alert: true });
 
   const member = db.prepare('SELECT * FROM members WHERE telegram_id = ?').get(telegramId);
   if (!member) return ctx.answerCbQuery('A\'zo topilmadi.');
 
   db.prepare("UPDATE members SET status = 'rejected', updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?").run(telegramId);
 
-  // Kick from Telegram Group
   const groupId = getSetting('group_id') || DEFAULT_GROUP_ID;
   let kickStatus = '';
 
@@ -691,11 +823,8 @@ bot.action(/^reject_(\d+)$/, async (ctx) => {
       await bot.telegram.unbanChatMember(groupId, Number(telegramId));
       kickStatus = ' (Guruhdan chiqarildi)';
     } catch (err) {
-      console.warn('Group kick error:', err.message);
-      kickStatus = ' (Guruhdan chiqarishda xatolik: bot guruhda admin emas yoki ID noto\'g\'ri)';
+      kickStatus = ' (Guruhdan chiqarishda xatolik: bot guruhda admin emas)';
     }
-  } else {
-    kickStatus = ' (Guruh ID ulanmagan)';
   }
 
   try {
@@ -706,9 +835,7 @@ bot.action(/^reject_(\d+)$/, async (ctx) => {
       `Agar bu xatolik bo'lsa, mahalla yordamchisiga murojaat qiling.`,
       { parse_mode: 'HTML' }
     );
-  } catch (e) {
-    console.warn('User DM error:', e.message);
-  }
+  } catch (e) {}
 
   await ctx.editMessageText(
     ctx.callbackQuery.message.text + `\n\n❌ <b>RAD ETILDI</b>${kickStatus}`,
@@ -718,25 +845,13 @@ bot.action(/^reject_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery('❌ A\'zo rad etildi!');
 });
 
-// Automatic Group Registration
-bot.on('my_chat_member', (ctx) => {
-  if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
-    const newStatus = ctx.myChatMember.new_chat_member.status;
-    if (newStatus === 'administrator' || newStatus === 'member') {
-      setSetting('group_id', ctx.chat.id);
-      console.log(`Bot yangi guruhga qo'shildi va guruh ID saqlandi: ${ctx.chat.id}`);
-    }
-  }
-});
-
-// Launch Bot with error handling
+// Launch Bot
 bot.launch({
   dropPendingUpdates: true
 })
   .then(() => {
     console.log(`🤖 Mahalla Telegram Boti muvaffaqiyatli ishga tushdi!`);
-    console.log(`Admin ID: ${ADMIN_ID}`);
-    console.log(`Bot username: @${bot.botInfo?.username || 'MahallaBot'}`);
+    console.log(`Admin IDs: ${getAdminIds().join(', ')}`);
   })
   .catch((err) => {
     if (err.message && err.message.includes('409: Conflict')) {
